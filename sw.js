@@ -1,5 +1,5 @@
 // Offline-Speicher. Bei neuen Dateien die Liste ergänzen und die Versionsnummer erhöhen.
-var VERSION = 'igel-rechnen-4';
+var VERSION = 'igel-rechnen-5';
 var DATEIEN = [
   './',
   'index.html',
@@ -7,6 +7,8 @@ var DATEIEN = [
   'js/igel.js',
   'js/aufgaben.js',
   'js/aufgaben-20.js',
+  'js/aufgaben-100.js',
+  'js/aufgaben-mal.js',
   'js/app.js',
   'manifest.webmanifest',
   'icons/favicon.svg',

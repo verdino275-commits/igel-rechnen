@@ -3,3 +3,8 @@ Musterbuch/
 *.rar
 *.jpg
 .claude/
+
+# Musterbilder für Igelrechnen 2 – niemals hochladen!
+Igelrechnen 2/
+*.jpeg
+.DS_Store

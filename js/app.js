@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSION = '1.0';
+  var VERSION = '2.0';
   var SPEICHER_SCHLUESSEL = 'igel-rechnen-v1';
   var LOB = ['Super!', 'Toll!', 'Richtig!', 'Klasse!', 'Prima!', 'Spitze!', 'Genau!'];
   var ZEICHEN_WORT = { '<': 'kleiner', '>': 'größer', '=': 'gleich' };
@@ -62,17 +62,27 @@
   }
 
   // Zahlen als Wörter vorlesen – sonst liest die Sprachausgabe „3.“ als „dritter“.
-  var ZAHLWOERTER = ['null', 'eins', 'zwei', 'drei', 'vier', 'fünf', 'sechs', 'sieben', 'acht', 'neun', 'zehn',
-    'elf', 'zwölf', 'dreizehn', 'vierzehn', 'fünfzehn', 'sechzehn', 'siebzehn', 'achtzehn', 'neunzehn', 'zwanzig'];
+  var EINER_WORT = ['null', 'eins', 'zwei', 'drei', 'vier', 'fünf', 'sechs', 'sieben', 'acht', 'neun', 'zehn',
+    'elf', 'zwölf', 'dreizehn', 'vierzehn', 'fünfzehn', 'sechzehn', 'siebzehn', 'achtzehn', 'neunzehn'];
+  var ZEHNER_WORT = ['', 'zehn', 'zwanzig', 'dreißig', 'vierzig', 'fünfzig', 'sechzig', 'siebzig', 'achtzig', 'neunzig'];
+  function zahlWort(n) {
+    if (n < 20) return EINER_WORT[n];
+    if (n < 100) {
+      var e = n % 10, z = ZEHNER_WORT[Math.floor(n / 10)];
+      return e === 0 ? z : (e === 1 ? 'ein' : EINER_WORT[e]) + 'und' + z;
+    }
+    return n === 100 ? 'hundert' : String(n);
+  }
   function zahlenAlsWoerter(text) {
-    return text.replace(/\d+/g, function (z) { return ZAHLWOERTER[Number(z)] || z; });
+    return text.replace(/\d+/g, function (z) { return zahlWort(Number(z)); });
   }
 
   function sprich(text, erzwingen) {
     if (!('speechSynthesis' in window)) return;
     if (!daten.einstellungen.vorlesen && !erzwingen) return;
     speechSynthesis.cancel();
-    var u = new SpeechSynthesisUtterance(zahlenAlsWoerter(text.replace(/−/g, ' minus ').replace(/\+/g, ' plus ')));
+    text = text.replace(/−/g, ' minus ').replace(/\+/g, ' plus ').replace(/·/g, ' mal ').replace(/(\d) ?: ?(\d)/g, '$1 geteilt durch $2');
+    var u = new SpeechSynthesisUtterance(zahlenAlsWoerter(text));
     u.lang = 'de-DE';
     u.rate = 0.9;
     if (stimme) u.voice = stimme;
@@ -108,36 +118,123 @@
 
   // ---------- Navigation (Zurück-Taste des Handys) ----------
 
-  window.addEventListener('popstate', function () {
+  // Seiten: Hauptseite (Klassenwahl) → Klasse → (Reihe wählen) → Übung.
+  // Jede Unterseite legt einen Eintrag im Verlauf an, damit die Zurück-Taste eine Seite zurückgeht.
+  window.addEventListener('popstate', function (ev) {
     if ('speechSynthesis' in window) speechSynthesis.cancel();
-    zeigeStart();
+    zeigeSeite(ev.state);
   });
-  function neueSeite() { history.pushState({ unterseite: true }, ''); }
+  function neueSeite(zustand) { history.pushState(zustand || { unterseite: true }, ''); }
 
-  // ---------- Startseite ----------
-
-  function zeigeStart() {
+  function zeigeSeite(zustand) {
     runde = null;
+    if (zustand && zustand.varianten) return zeigeVarianten(zustand.varianten);
+    if (zustand && zustand.klasse) return zeigeKlasse(zustand.klasse);
+    zeigeHauptseite();
+  }
+
+  // Eine Seite zurück (oder direkt zur Seite darüber, wenn es keinen Verlauf gibt).
+  function zurueck(ersatz) {
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (history.state && (history.state.unterseite || history.state.klasse || history.state.varianten)) history.back();
+    else ersatz();
+  }
+
+  var KLASSEN = {
+    1: {
+      titel: 'Igel-Rechnen 1', klasse: '1. Klasse', inhalt: 'Zahlen bis 20', farbe: '#2a9d8f',
+      abschnitte: [[1, 'Zahlen bis 10'], [2, 'Zahlen bis 20']]
+    },
+    2: {
+      titel: 'Igel-Rechnen 2', klasse: '2. Klasse', inhalt: 'Zahlen bis 100 und Einmaleins', farbe: '#e76f51',
+      abschnitte: [[3, 'Zahlen bis 100'], [4, 'Plus und Minus bis 100'], [5, 'Einmaleins'], [6, 'Teilen']]
+    }
+  };
+
+  function klasseVon(t) { return t.klasse || 1; }
+  function themaMitId(id) { return THEMEN.filter(function (t) { return t.id === id; })[0]; }
+
+  // Ein Thema mit Varianten (Malreihen) wird für jede Variante zu einem eigenen Thema.
+  function variantenThema(t, v) {
+    return {
+      id: t.id + '-' + v.id, titel: t.titel + ' ' + v.titel, klasse: t.klasse, stufe: t.stufe, farbe: t.farbe,
+      anzahl: t.anzahl, eltern: t.id,
+      erzeuge: function (i, benutzt) { return t.erzeuge(i, benutzt, v.wert); }
+    };
+  }
+
+  function besteSterne(t) {
+    if (!t.varianten) { var f = daten.fortschritt[t.id]; return f ? f.beste : 0; }
+    return Math.max.apply(null, t.varianten.map(function (v) { return besteSterne(variantenThema(t, v)); }));
+  }
+
+  // ---------- Hauptseite: Klasse wählen ----------
+
+  function zeigeHauptseite() {
+    runde = null;
+    var karte = function (nr) {
+      var k = KLASSEN[nr], themen = THEMEN.filter(function (t) { return klasseVon(t) === nr && !t.bald; });
+      var sterne = themen.reduce(function (s, t) { return s + besteSterne(t); }, 0);
+      return '<button class="klassen-karte" data-klasse="' + nr + '" style="--farbe:' + k.farbe + '">' +
+        '<span class="klassen-nr">' + nr + '</span>' +
+        '<span class="klassen-text"><span class="klassen-titel">' + k.titel + '</span>' +
+        '<span class="klassen-info">' + k.klasse + ' · ' + k.inhalt + '</span>' +
+        '<span class="klassen-sterne"><span class="stern an">★</span> ' + sterne + ' von ' + themen.length * 3 + '</span></span>' +
+        '<span class="pfeil" aria-hidden="true">›</span></button>';
+    };
+    app.innerHTML =
+      '<section class="start">' +
+      '<button class="eltern-knopf" data-aktion="eltern" aria-label="Elternbereich">⚙</button>' +
+      '<div class="kopf">' + igelSVG('froh') +
+      '<div><h1>Igel-Rechnen</h1><p class="gruss">Hallo! In welche Klasse gehst du?</p></div></div>' +
+      '<div class="klassen">' + karte(1) + karte(2) + '</div>' +
+      '</section>';
+  }
+
+  // ---------- Übersicht einer Klasse ----------
+
+  function zeigeKlasse(nr) {
+    runde = null;
+    var k = KLASSEN[nr];
     var karten = function (stufe) {
-      return THEMEN.filter(function (t) { return t.stufe === stufe; }).map(function (t) {
-        var f = daten.fortschritt[t.id];
+      return THEMEN.filter(function (t) { return klasseVon(t) === nr && t.stufe === stufe; }).map(function (t) {
         if (t.bald) {
           return '<div class="karte bald" aria-disabled="true"><span class="symbol">' + t.symbol +
             '</span><span class="titel">' + t.titel + '</span><span class="marke">bald</span></div>';
         }
         return '<button class="karte" data-thema="' + t.id + '" style="--farbe:' + t.farbe + '">' +
           '<span class="symbol">' + t.symbol + '</span><span class="titel">' + t.titel + '</span>' +
-          sterneHTML(f ? f.beste : 0, 'klein') + '</button>';
+          sterneHTML(besteSterne(t), 'klein') + '</button>';
       }).join('');
     };
 
     app.innerHTML =
-      '<section class="start">' +
-      '<button class="eltern-knopf" data-aktion="eltern" aria-label="Elternbereich">⚙</button>' +
-      '<div class="kopf">' + igelSVG('froh') +
-      '<div><h1>Igel-Rechnen</h1><p class="gruss">Hallo! Was wollen wir heute üben?</p></div></div>' +
-      '<h2>Zahlen bis 10</h2><div class="karten">' + karten(1) + '</div>' +
-      '<h2>Zahlen bis 20</h2><div class="karten">' + karten(2) + '</div>' +
+      '<section class="start" style="--farbe:' + k.farbe + '">' +
+      '<header class="leiste"><button class="rund" data-aktion="haupt" aria-label="Zur Klassenwahl">‹</button>' +
+      '<h2 class="seitentitel">' + k.titel + '</h2><span class="platzhalter"></span></header>' +
+      '<div class="kopf klein">' + igelSVG('froh') +
+      '<p class="gruss">Was wollen wir heute üben?</p></div>' +
+      k.abschnitte.map(function (a) {
+        return '<h2>' + a[1] + '</h2><div class="karten">' + karten(a[0]) + '</div>';
+      }).join('') +
+      '</section>';
+  }
+
+  // ---------- Variante wählen (z. B. welche Malreihe) ----------
+
+  function zeigeVarianten(themaId) {
+    runde = null;
+    var t = themaMitId(themaId);
+    app.innerHTML =
+      '<section class="start" style="--farbe:' + t.farbe + '">' +
+      '<header class="leiste"><button class="rund" data-aktion="haupt" aria-label="Zurück">‹</button>' +
+      '<h2 class="seitentitel">' + t.titel + '</h2><span class="platzhalter"></span></header>' +
+      '<div class="kopf klein">' + igelSVG('froh') + '<p class="gruss">Welche Reihe möchtest du üben?</p></div>' +
+      '<div class="karten drei">' + t.varianten.map(function (v) {
+        var f = daten.fortschritt[t.id + '-' + v.id];
+        return '<button class="karte" data-thema="' + t.id + '" data-variante="' + v.id + '" style="--farbe:' + t.farbe + '">' +
+          '<span class="symbol">' + v.titel + '</span>' + sterneHTML(f ? f.beste : 0, 'klein') + '</button>';
+      }).join('') + '</div>' +
       '</section>';
   }
 
@@ -145,11 +242,17 @@
 
   var runde = null;
 
-  function starteRunde(themaId, gleicheSeite) {
-    var thema = THEMEN.filter(function (t) { return t.id === themaId; })[0];
+  function starteRunde(thema, gleicheSeite) {
     runde = { thema: thema, anzahl: thema.anzahl || 10, nr: 0, benutzt: {}, gleichRichtig: 0 };
-    if (!gleicheSeite) neueSeite();
+    if (!gleicheSeite) neueSeite({ unterseite: true, klasse: klasseVon(thema) });
     naechsteAufgabe();
+  }
+
+  function waehleThema(themaId, varianteId) {
+    var t = themaMitId(themaId);
+    if (varianteId) return starteRunde(variantenThema(t, t.varianten.filter(function (v) { return v.id === varianteId; })[0]));
+    if (t.varianten) { neueSeite({ varianten: t.id, klasse: klasseVon(t) }); return zeigeVarianten(t.id); }
+    starteRunde(t);
   }
 
   function naechsteAufgabe() {
@@ -187,7 +290,8 @@
       fortschritt += '<span class="schritt' + (k < runde.nr ? ' fertig' : k === runde.nr ? ' jetzt' : '') + '"></span>';
     }
     var hilfe = a.hilfe
-      ? '<div class="hilfe' + (a.hilfe.sichtbar ? '' : ' versteckt') + '">' + streifenHTML(a.hilfe.punkte) + '</div>'
+      ? '<div class="hilfe' + (a.hilfe.sichtbar ? '' : ' versteckt') + '">' +
+        (a.hilfe.bild ? bildHTML(a.hilfe.bild) : streifenHTML(a.hilfe.punkte)) + '</div>'
       : '';
 
     app.innerHTML =
@@ -210,12 +314,16 @@
         return '<div class="gleichung">' + a.a + ' ' + a.op + ' ' + a.b + ' = ' + feld(0) + '</div>';
 
       case 'zeilen':
-        var klein = a.zeilen.length > 1 || a.zeilen[0].length > 5;
-        return '<div class="gleichungen">' + a.zeilen.map(function (zeile) {
-          return '<div class="gleichung' + (klein ? ' klein' : '') + '">' + zeile.map(function (teil) {
-            return typeof teil === 'object' ? feld(teil.luecke) : teil;
-          }).join(' ') + '</div>';
-        }).join('') + '</div>';
+        return zeilenHTML(a.zeilen);
+
+      case 'bloecke':
+        return a.bloecke.map(function (b) {
+          if (b.zeilen) return zeilenHTML(b.zeilen);
+          if (b.gitter) return gitterHTML(b.gitter, b.stil);
+          if (b.bild) return bildHTML(b.bild);
+          if (b.text) return '<p class="aufgabentext">' + b.text + '</p>';
+          return '';
+        }).join('');
 
       case 'haus':
         return '<div class="haus"><div class="dach"><span class="dachzahl">' + a.dach + '</span></div><div class="wand">' +
@@ -252,13 +360,14 @@
         return blumeHTML(a);
 
       case 'umkehr':
+        var op = a.op || '+', um = a.umkehrOp || '−';
         return '<div class="kugeln"><span class="kugel">' + a.a + '</span><span class="kugel">' + a.b +
           '</span><span class="kugel gross">' + a.s + '</span></div>' +
           '<div class="umkehr">' +
-          '<div class="gleichung klein">' + a.a + ' + ' + a.b + ' = ' + feld(0) + '</div>' +
-          '<div class="gleichung klein">' + a.s + ' − ' + a.a + ' = ' + feld(2) + '</div>' +
-          '<div class="gleichung klein">' + a.b + ' + ' + a.a + ' = ' + feld(1) + '</div>' +
-          '<div class="gleichung klein">' + a.s + ' − ' + a.b + ' = ' + feld(3) + '</div></div>';
+          '<div class="gleichung klein">' + a.a + ' ' + op + ' ' + a.b + ' = ' + feld(0) + '</div>' +
+          '<div class="gleichung klein">' + a.s + ' ' + um + ' ' + a.a + ' = ' + feld(2) + '</div>' +
+          '<div class="gleichung klein">' + a.b + ' ' + op + ' ' + a.a + ' = ' + feld(1) + '</div>' +
+          '<div class="gleichung klein">' + a.s + ' ' + um + ' ' + a.b + ' = ' + feld(3) + '</div></div>';
     }
     return '';
   }
@@ -287,13 +396,135 @@
       var offen = a.offen.indexOf(k);
       html += offen >= 0
         ? '<span class="aussen-platz" style="' + pos(40) + '">' + feld(offen, 'blatt-luecke') + '</span>'
-        : '<span class="aussen" style="' + pos(40) + '">' + (a.mitte - zahl) + '</span>';
+        : '<span class="aussen" style="' + pos(40) + '">' + (a.aussen ? a.aussen[k] : a.mitte - zahl) + '</span>';
     });
-    return html + '<span class="mitte">' + a.mitte + '</span></div>';
+    return html + '<span class="mitte' + (a.mitteText ? ' text' : '') + '">' + (a.mitteText || a.mitte) + '</span></div>';
+  }
+
+  // Gleichungen untereinander. Die Schrift wird kleiner, je länger die längste Zeile ist.
+  function zeilenHTML(zeilen) {
+    var laenge = function (zeile) {
+      return zeile.reduce(function (s, teil) { return s + 1 + (typeof teil === 'object' ? 3 : String(teil).length); }, 0);
+    };
+    var max = Math.max.apply(null, zeilen.map(laenge));
+    var groesse = zeilen.length === 1 && max <= 12 ? '' : max <= 15 ? ' klein' : max <= 19 ? ' kleiner' : ' winzig';
+    return '<div class="gleichungen">' + zeilen.map(function (zeile) {
+      return '<div class="gleichung' + groesse + '">' + zeile.map(teilHTML).join(' ') + '</div>';
+    }).join('') + '</div>';
+  }
+
+  function teilHTML(teil) {
+    if (teil === null || teil === undefined) return '';
+    if (typeof teil !== 'object') return String(teil);
+    if (teil.luecke !== undefined) return feld(teil.luecke);
+    if (teil.kopie !== undefined) return '<span class="kopie" data-kopie="' + teil.kopie + '">?</span>';
+    return '';
+  }
+
+  // Lösung einer Lücke an den Stellen zeigen, die sie wiederverwenden (z. B. 53 + 10 = 63, dann 63 + 4).
+  function fuelleKopien(k, wert) {
+    app.querySelectorAll('.kopie[data-kopie="' + k + '"]').forEach(function (e) {
+      e.textContent = wert;
+      e.classList.add('gefuellt');
+    });
+  }
+
+  // Tabelle: Hundertertafel-Ausschnitt, Maltabelle, Zehner/Einer-Tafel. null = leeres Feld.
+  function gitterHTML(gitter, stil) {
+    var spalten = Math.max.apply(null, gitter.map(function (z) { return z.length; }));
+    return '<div class="gitter ' + (stil || '') + '" style="grid-template-columns:repeat(' + spalten + ', auto)">' +
+      gitter.map(function (zeile) {
+        return zeile.map(function (z) {
+          if (z === null) return '<span class="zelle leer"></span>';
+          if (typeof z === 'object' && z.luecke !== undefined) return feld(z.luecke, 'zelle');
+          if (typeof z === 'object' && z.kopf !== undefined) return '<span class="zelle kopf">' + z.kopf + '</span>';
+          return '<span class="zelle">' + teilHTML(z) + '</span>';
+        }).join('');
+      }).join('') + '</div>';
+  }
+
+  function punkteHTML(n, klasse) {
+    var s = '';
+    for (var k = 0; k < n; k++) s += '<span class="pkt' + (klasse ? ' ' + klasse : '') + '"></span>';
+    return s;
+  }
+
+  // Bilder zu den Aufgaben.
+  function bildHTML(b) {
+    var k, html;
+    switch (b.typ) {
+      case 'zehner': // Zehnerstangen und einzelne Einer
+        html = '<div class="bild zehner-bild" aria-hidden="true">';
+        for (k = 0; k < b.z; k++) html += '<span class="stange">' + punkteHTML(10) + '</span>';
+        if (b.e) html += '<span class="einer">' + punkteHTML(b.e) + '</span>';
+        return html + '</div>';
+
+      case 'feld': // Punktefeld für Malaufgaben: reihen × spalten
+        html = '<div class="bild punktefeld" aria-hidden="true">';
+        for (k = 0; k < b.reihen; k++) html += '<span class="feldreihe">' + punkteHTML(b.spalten) + '</span>';
+        return html + '</div>';
+
+      case 'gruppen': // Punkte in Gruppen, eingekreist, optional mit Rest
+        html = '<div class="bild gruppen" aria-hidden="true">';
+        for (k = 0; k < b.gruppen; k++) {
+          html += '<span class="gruppe' + (b.umkreist ? ' umkreist' : '') + '" style="--je:' + Math.min(b.je, 3) + '">' + punkteHTML(b.je) + '</span>';
+        }
+        if (b.rest) html += '<span class="gruppe rest" style="--je:' + Math.min(b.rest, 3) + '">' + punkteHTML(b.rest, 'rot') + '</span>';
+        return html + '</div>';
+
+      case 'punkte': // lose Punkte
+        return '<div class="bild lose-punkte" aria-hidden="true">' + punkteHTML(b.n) + '</div>';
+
+      case 'paare': // gerade/ungerade: Punkte paarweise
+        html = '<div class="bild paare" aria-hidden="true">';
+        for (k = 0; k < Math.floor(b.n / 2); k++) html += '<span class="paar">' + punkteHTML(2) + '</span>';
+        if (b.n % 2) html += '<span class="paar">' + punkteHTML(1, 'rot') + '</span>';
+        return html + '</div>';
+
+      case 'dinge':
+        html = '<div class="bild dinge" aria-hidden="true">';
+        for (k = 0; k < b.n; k++) html += '<span>' + b.ding + '</span>';
+        return html + '</div>';
+
+      case 'teller': // gerecht verteilt: ein Teller je Kind
+        html = '<div class="bild teller-bild" aria-hidden="true">';
+        for (k = 0; k < b.kinder; k++) {
+          var inhalt = '';
+          for (var j = 0; j < b.je; j++) inhalt += '<span>' + b.ding + '</span>';
+          html += '<span class="kind"><span class="gesicht">🙂</span><span class="teller">' + inhalt + '</span></span>';
+        }
+        return html + '</div>';
+
+      case 'strahl':
+        return strahlSVG(b.von, b.bis, b.wert);
+    }
+    return '';
+  }
+
+  // Zahlenstrahl von „von“ bis „bis“, ein Strich je Zahl, Pfeil zeigt auf „wert“.
+  function strahlSVG(von, bis, wert) {
+    var breite = 340, rand = 18, schritt = (breite - 2 * rand) / (bis - von), html = '';
+    var x = function (n) { return (rand + (n - von) * schritt).toFixed(1); };
+    html += '<line x1="' + (rand - 8) + '" y1="52" x2="' + (breite - rand + 8) + '" y2="52" stroke="#3d3027" stroke-width="2.5"/>';
+    for (var n = von; n <= bis; n++) {
+      var lang = n % 10 === 0 ? 16 : n % 5 === 0 ? 11 : 6;
+      html += '<line x1="' + x(n) + '" y1="' + (52 - lang) + '" x2="' + x(n) + '" y2="' + (52 + lang) +
+        '" stroke="#3d3027" stroke-width="' + (n % 10 === 0 ? 2.5 : 1.5) + '"/>';
+      if (n % 10 === 0) html += '<text x="' + x(n) + '" y="92" text-anchor="middle" font-size="20" font-weight="700" fill="#3d3027">' + n + '</text>';
+    }
+    if (wert !== undefined) html += '<path d="M' + x(wert) + ' 32 l-9 -18 h18 z" class="strahl-pfeil"/>';
+    return '<svg class="bild strahl" viewBox="0 0 ' + breite + ' 100" aria-hidden="true">' + html + '</svg>';
   }
 
   function eingabeHTML() {
     var l = aktuelleLuecke();
+    if (l.optionen) {
+      var wort = l.optionen.some(function (o) { return typeof o === 'string'; });
+      return '<div class="auswahl" style="grid-template-columns:repeat(' + l.optionen.length + ', 1fr)">' +
+        l.optionen.map(function (o) {
+          return '<button class="taste gross' + (wort ? ' wort' : '') + '" data-antwort="' + o + '">' + o + '</button>';
+        }).join('') + '</div>';
+    }
     if (runde.aufgabe.zeichen) {
       return '<div class="auswahl">' + ['<', '=', '>'].map(function (z) {
         return '<button class="taste gross" data-antwort="' + z + '" aria-label="' + ZEICHEN_WORT[z] + '">' + z + '</button>';
@@ -319,7 +550,7 @@
   }
 
   function tippe(ziffer) {
-    if (!runde || runde.gesperrt || runde.eingabe.length >= 2) return;
+    if (!runde || runde.gesperrt || runde.eingabe.length >= 3) return;
     runde.eingabe = (runde.eingabe === '0' ? '' : runde.eingabe) + ziffer;
     zeigeEingabe();
   }
@@ -362,6 +593,7 @@
       runde.gesperrt = true;
       el.classList.remove('aktiv', 'falsch');
       el.classList.add('richtig');
+      fuelleKopien(runde.k, l.loesung);
       var letzte = runde.k === a.luecken.length - 1;
       if (letzte) {
         var lob = LOB[zufall(0, LOB.length - 1)];
@@ -389,7 +621,7 @@
       if (falscherKnopf) falscherKnopf.disabled = true;
       var hilfe = app.querySelector('.hilfe');
       if (hilfe) hilfe.classList.remove('versteckt');
-      var tipp = l.tipp ? 'Fast! ' + l.tipp : hilfe ? 'Fast! Schau dir die Punkte an.' : 'Fast! Versuch es nochmal.';
+      var tipp = l.tipp ? 'Fast! ' + l.tipp : hilfe ? (a.hilfe.bild ? 'Fast! Schau dir das Bild an.' : 'Fast! Schau dir die Punkte an.') : 'Fast! Versuch es nochmal.';
       blase(tipp, 'denkt');
       sprich(tipp);
       var dieseRunde = runde, k = runde.k;
@@ -404,10 +636,12 @@
 
     // Zweiter Fehler: Lösung zeigen, dann tippt das Kind auf „Weiter“.
     runde.gesperrt = true;
+    var kNr = runde.k;
     setTimeout(function () {
       el.textContent = l.loesung;
       el.classList.remove('falsch', 'aktiv');
       el.classList.add('loesung');
+      fuelleKopien(kNr, l.loesung);
     }, 500);
     var text = l.loesungText || (a.zeichen ? 'Hier passt ' + l.loesung + '.' : 'Das Ergebnis ist ' + l.loesung + '.');
     blase(text, 'normal');
@@ -467,11 +701,21 @@
 
   function zeigeEltern() {
     var e = daten.einstellungen;
-    var zeilen = THEMEN.filter(function (t) { return !t.bald; }).map(function (t) {
+    var zeile = function (t) {
       var f = daten.fortschritt[t.id];
       var quote = f && f.aufgaben ? Math.round(100 * f.richtig / f.aufgaben) + ' %' : '–';
       return '<tr><td>' + t.titel + '</td><td>' + (f ? f.runden : 0) + '</td><td>' + quote + '</td><td>' +
         sterneHTML(f ? f.beste : 0, 'klein') + '</td></tr>';
+    };
+    var zeilen = [1, 2].map(function (nr) {
+      return '<tr class="gruppe-kopf"><th colspan="4">' + KLASSEN[nr].titel + '</th></tr>' +
+        THEMEN.filter(function (t) { return klasseVon(t) === nr && !t.bald; }).map(function (t) {
+          if (!t.varianten) return zeile(t);
+          // Malreihen: nur geübte Reihen auflisten
+          var geuebt = t.varianten.map(function (v) { return variantenThema(t, v); })
+            .filter(function (vt) { return daten.fortschritt[vt.id]; });
+          return geuebt.length ? geuebt.map(zeile).join('') : zeile(t);
+        }).join('');
     }).join('');
 
     app.innerHTML =
@@ -507,7 +751,8 @@
     if (!knopf) return;
     var d = knopf.dataset;
 
-    if (d.thema) return starteRunde(d.thema);
+    if (d.klasse) { neueSeite({ klasse: Number(d.klasse) }); return zeigeKlasse(Number(d.klasse)); }
+    if (d.thema) return waehleThema(d.thema, d.variante);
     if (d.ziffer !== undefined) return tippe(d.ziffer);
     if (d.antwort !== undefined) return pruefe(d.antwort);
 
@@ -525,11 +770,14 @@
         if (runde) sprich(aktuelleLuecke().sprich, true);
         break;
       case 'nochmal':
-        starteRunde(runde.thema.id, true);
+        starteRunde(runde.thema, true);
         break;
       case 'heim':
-        if ('speechSynthesis' in window) speechSynthesis.cancel();
-        if (history.state && history.state.unterseite) history.back(); else zeigeStart();
+        var klasse = runde && klasseVon(runde.thema);
+        zurueck(function () { if (klasse) { runde = null; zeigeKlasse(klasse); } else zeigeHauptseite(); });
+        break;
+      case 'haupt':
+        zurueck(zeigeHauptseite);
         break;
       case 'eltern':
         zeigeElternTor();
@@ -564,6 +812,7 @@
       if (['<', '>', '='].indexOf(ev.key) >= 0) pruefe(ev.key);
       return;
     }
+    if (aktuelleLuecke().optionen) return; // nur mit den Knöpfen
     if (/^[0-9]$/.test(ev.key)) tippe(ev.key);
     else if (ev.key === 'Backspace') loesche();
     else if (ev.key === 'Enter' && runde.eingabe !== '') pruefe(Number(runde.eingabe));
@@ -574,5 +823,5 @@
     navigator.serviceWorker.register('sw.js').catch(function () { });
   }
 
-  zeigeStart();
+  zeigeSeite(history.state);
 })();
